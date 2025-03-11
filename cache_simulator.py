@@ -1,23 +1,20 @@
+import numpy as np
+import itertools
+
 class Cache:
-    def __init__(self, name, size, block_size, associativity, policy='LRU', write_policy='write-back'):
-        self.name = name
-        self.size = size  # Bytes
-        self.block_size = block_size  # Bytes per block
+    def __init__(self, size, block_size, associativity):
+        self.size = size          # in bytes
+        self.block_size = block_size  # in bytes
         self.associativity = associativity
         self.sets = size // (block_size * associativity)
-        self.policy = policy
-        self.write_policy = write_policy
-        self.stats = {'hits': 0, 'misses': 0, 'writebacks': 0}
-        
-        # Initialize cache: list of sets, each set is a list of blocks
-        self.cache = [
-            [{'valid': False, 'tag': -1, 'lru_counter': 0, 'dirty': False}
-             for _ in range(associativity)]
-            for _ in range(self.sets)
-        ]
+        self.cache = [[{'valid': False, 'tag': -1, 'lru_counter': 0} 
+                      for _ in range(associativity)] 
+                      for _ in range(self.sets)]
+        self.hits = 0
+        self.misses = 0
         self.time = 0
 
-    def access(self, address, is_write=False):
+    def access(self, address):
         set_index = (address // self.block_size) % self.sets
         tag = (address // self.block_size) // self.sets
         self.time += 1
@@ -25,89 +22,83 @@ class Cache:
         # Check for hit
         for block in self.cache[set_index]:
             if block['valid'] and block['tag'] == tag:
-                self.stats['hits'] += 1
+                self.hits += 1
                 block['lru_counter'] = self.time
-                if is_write and self.write_policy == 'write-back':
-                    block['dirty'] = True
-                return True  # Hit
+                return
 
-        # Miss: handle replacement
-        self.stats['misses'] += 1
+        # Handle miss
+        self.misses += 1
+        # Find LRU block
         lru_block = min(self.cache[set_index], key=lambda x: x['lru_counter'])
-        
-        # Writeback if dirty
-        if lru_block['dirty'] and self.write_policy == 'write-back':
-            self.stats['writebacks'] += 1
-        
-        # Replace block
         lru_block['valid'] = True
         lru_block['tag'] = tag
         lru_block['lru_counter'] = self.time
-        lru_block['dirty'] = is_write if self.write_policy == 'write-back' else False
-        return False  # Miss
 
-class GPUCacheHierarchy:
+class CacheHierarchy:
     def __init__(self):
-        self.l1 = Cache('L1', 16384, 64, 8)  # 16KB L1, 64B blocks, 8-way
-        self.l2 = Cache('L2', 1048576, 64, 16)  # 1MB L2, 64B blocks, 16-way
+        self.l1 = Cache(16384, 64, 8)  # 16KB L1, 64B blocks, 8-way
+        self.l2 = Cache(1048576, 64, 16)  # 1MB L2, 64B blocks, 16-way
 
-    def access_memory(self, address, is_write=False):
-        # Access L1 first
-        hit = self.l1.access(address, is_write)
-        if not hit:
-            # On L1 miss, access L2
-            hit = self.l2.access(address, is_write)
-        return hit
+    def access(self, address):
+        # Access L1
+        l1_hit = any(block['valid'] and block['tag'] == (address//64) for block in 
+                    self.l1.cache[(address//64) % (16384//(64*8))])
+        
+        if not l1_hit:
+            # Access L2 on L1 miss
+            self.l1.access(address)
+            self.l2.access(address)
+        else:
+            self.l1.hits += 1
+
+def generate_optimization_combinations():
+    tiling_sizes = [16, 32, 64]
+    data_layouts = ['NCHW', 'NHWC']
+    use_fusion = [True, False]
+    return list(itertools.product(tiling_sizes, data_layouts, use_fusion))
+
+def simulate_optimized_conv(tiling_size, data_layout, use_fusion):
+    cache_system = CacheHierarchy()
+    H, W = 256, 256
+    K = 3
     
-
-def simulate_conv_layer(cache_system, C_in, C_out, H, W, K, stride=1, padding=0):
-    # Simulate memory accesses for a convolution layer
-    for c_out in range(C_out):  # Output channels
-        for c_in in range(C_in):  # Input channels
-            for y in range(H):  # Output height
-                for x in range(W):  # Output width
-                    # Input window coordinates
-                    y_start = y * stride - padding
-                    x_start = x * stride - padding
-                    for ky in range(K):  # Kernel height
-                        for kx in range(K):  # Kernel width
-                            y_in = y_start + ky
-                            x_in = x_start + kx
-                            if 0 <= y_in < H and 0 <= x_in < W:
-                                # Calculate global memory address for input pixel
-                                # Assumes NCHW layout: input[c_in][y_in][x_in]
-                                input_addr = c_in * (H * W) + y_in * W + x_in
-                                cache_system.access_memory(input_addr)
+    for y_tile in range(0, H, tiling_size):
+        for x_tile in range(0, W, tiling_size):
+            for y in range(y_tile, min(y_tile + tiling_size, H)):
+                for x in range(x_tile, min(x_tile + tiling_size, W)):
+                    # Generate addresses
+                    if data_layout == 'NHWC':
+                        addr = y * W * 3 + x * 3  # NHWC format
+                    else:
+                        addr = 3 * (y * W + x)    # NCHW format
                     
-                    # Simulate kernel weight access (c_out, c_in, ky, kx)
-                    kernel_addr = c_out * (C_in * K * K) + c_in * (K * K) + ky * K + kx
-                    cache_system.access_memory(kernel_addr)
+                    # Simulate read
+                    cache_system.access(addr)
+                    
+                    # Simulate write if not fused
+                    if not use_fusion:
+                        cache_system.access(addr)
 
-                    # Simulate output write (c_out, y, x)
-                    output_addr = c_out * (H * W) + y * W + x
-                    cache_system.access_memory(output_addr, is_write=True)
+    # Calculate hit rates
+    l1_hr = cache_system.l1.hits / (cache_system.l1.hits + cache_system.l1.misses)
+    l2_hr = cache_system.l2.hits / (cache_system.l2.hits + cache_system.l2.misses)
+    return l1_hr, l2_hr
 
-# Initialize cache hierarchy
-gpu_cache = GPUCacheHierarchy()
+def find_best_optimization():
+    combinations = generate_optimization_combinations()
+    best_l1 = -1
+    best_config = None
 
-# Simulate a Conv2D layer: 3 input channels, 64 output channels, 256x256 input, 3x3 kernel
-simulate_conv_layer(gpu_cache, C_in=3, C_out=64, H=256, W=256, K=3, stride=1, padding=1)
+    for config in combinations:
+        tiling, layout, fusion = config
+        l1_hr, l2_hr = simulate_optimized_conv(tiling, layout, fusion)
+        print(f"Config: Tile={tiling}, Layout={layout}, Fusion={fusion} => L1={l1_hr:.2f}, L2={l2_hr:.2f}")
+        if l1_hr > best_l1:
+            best_l1 = l1_hr
+            best_config = config
 
-# Print results
-print("L1 Cache Stats:")
-print(f"Hit Rate: {gpu_cache.l1.stats['hits'] / (gpu_cache.l1.stats['hits'] + gpu_cache.l1.stats['misses']):.2f}")
-print("L2 Cache Stats:")
-print(f"Hit Rate: {gpu_cache.l2.stats['hits'] / (gpu_cache.l2.stats['hits'] + gpu_cache.l2.stats['misses']):.2f}")
+    print(f"\nBest Config: Tile={best_config[0]}, Layout={best_config[1]}, Fusion={best_config[2]}")
+    print(f"L1 Hit Rate: {best_l1:.2f}")
 
-
-import matplotlib.pyplot as plt
-
-def plot_cache_stats(cache):
-    labels = ['Hits', 'Misses']
-    values = [cache.stats['hits'], cache.stats['misses']]
-    plt.bar(labels, values)
-    plt.title(f"{cache.name} Cache Performance")
-    plt.show()
-
-plot_cache_stats(gpu_cache.l1)
-plot_cache_stats(gpu_cache.l2)
+if __name__ == "__main__":
+    find_best_optimization()
