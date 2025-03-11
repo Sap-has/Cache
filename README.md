@@ -7,16 +7,27 @@ This project simulates and analyzes the impact of **tiling optimizations**, **da
 ## 📊 Key Results  
 ### Simulation Output  
 Config: Tile=16, Layout=NCHW, Fusion=True => L1=0.95, L2=0.95
+
 Config: Tile=16, Layout=NCHW, Fusion=False => L1=0.98, L2=0.98
+
 Config: Tile=16, Layout=NHWC, Fusion=True => L1=0.95, L2=0.95
+
 Config: Tile=16, Layout=NHWC, Fusion=False => L1=0.98, L2=0.98
+
 Config: Tile=32, Layout=NCHW, Fusion=True => L1=0.95, L2=0.95
+
 Config: Tile=32, Layout=NCHW, Fusion=False => L1=0.98, L2=0.98
+
 Config: Tile=32, Layout=NHWC, Fusion=True => L1=0.95, L2=0.95
+
 Config: Tile=32, Layout=NHWC, Fusion=False => L1=0.98, L2=0.98
+
 Config: Tile=64, Layout=NCHW, Fusion=True => L1=0.95, L2=0.95
+
 Config: Tile=64, Layout=NCHW, Fusion=False => L1=0.98, L2=0.98
+
 Config: Tile=64, Layout=NHWC, Fusion=True => L1=0.95, L2=0.95
+
 Config: Tile=64, Layout=NHWC, Fusion=False => L1=0.98, L2=0.98
 
 **Best Configuration**:  
